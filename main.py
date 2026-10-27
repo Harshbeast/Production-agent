@@ -9,7 +9,7 @@ import os
 from datetime import datetime, timedelta
 from collections import defaultdict
 
-from creater import create_schedule
+from creater import create_schedule, get_working_dates
 
 # ============================================
 # PAGE CONFIG
@@ -281,7 +281,8 @@ def prepare_planning_inputs(targets_df, material_df, config_df, mad_df, start_da
         new_targets.append({
             "Product": p,
             "Target_Qty": max(0, original - done),
-            "Priority": int(row["Priority"]) if "Priority" in row else 10
+            "Priority": int(row["Priority"]) if "Priority" in row else 10,
+            "Max_Per_Day": int(row["Max_Per_Day"]) if "Max_Per_Day" in row and pd.notna(row.get("Max_Per_Day")) else None,
         })
     targets_rem = pd.DataFrame(new_targets)
 
@@ -417,14 +418,13 @@ with c_from:
         "Plan from",
         value=max(today_date, biz_start),
         min_value=biz_start,
-        max_value=biz_end,
         key="plan_start",
     )
 with c_to:
     plan_end = st.date_input(
         "Plan to",
-        value=biz_end,
-        min_value=biz_start,
+        value=max(biz_end, plan_start),
+        min_value=plan_start,
         key="plan_end",
     )
 
@@ -548,10 +548,12 @@ with c1:
             )
             st.session_state["prep_summary"] = summary
 
+            working_dates = get_working_dates(start_date_str, end_date_str)
             result = create_schedule(
                 material_df=material_rem,
                 targets_df=targets_rem,
                 start_date=start_date_str,
+                working_dates=working_dates,
                 end_date=end_date_str,
                 config_df=config_rem if not config_rem.empty else None,
                 mad_df=mad_open if not mad_open.empty else None,
@@ -816,10 +818,12 @@ with st.expander("Move configuration"):
                     targets_rem, material_rem, config_rem, mad_open, _ = prepare_planning_inputs(
                         targets_df, material_df, config_df, mad_df, start_date_str
                     )
+                    working_dates = get_working_dates(start_date_str, end_date_str)
                     result = create_schedule(
                         material_df=material_rem,
                         targets_df=targets_rem,
                         start_date=start_date_str,
+                        working_dates=working_dates,
                         end_date=end_date_str,
                         config_df=config_rem if not config_rem.empty else None,
                         mad_df=mad_open if not mad_open.empty else None,
@@ -880,10 +884,12 @@ with st.expander("Day completion / actuals"):
                 targets_rem, material_rem, config_rem, mad_open, summary = prepare_planning_inputs(
                     targets_df, material_df, config_df, mad_df, today_str
                 )
+                working_dates = get_working_dates(today_str, end_date_str)
                 result = create_schedule(
                     material_df=material_rem,
                     targets_df=targets_rem,
                     start_date=today_str,
+                    working_dates=working_dates,
                     end_date=end_date_str,
                     config_df=config_rem if not config_rem.empty else None,
                     mad_df=mad_open if not mad_open.empty else None,

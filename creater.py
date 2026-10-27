@@ -14,17 +14,6 @@ earliness_weight = 1000
 mad_penalty_weight = 500
 
 ZEN70_TYPES = ["zen70_pv", "zen70_py", "zen70_pz"]
-ZEN70_FAMILY_DAILY_MAX = 3   # total Zen70 of any type per day
-
-product_max = {
-    "zen10": 1,
-    "zen30": 1,
-    "zen50": 2,
-    "zen70_pv": 3,
-    "zen70_py": 3,
-    "zen70_pz": 3,
-    "zen90": 3,
-}
 
 
 def parse_date(date_str):
@@ -69,7 +58,48 @@ def zen70_subtype_from_order(order_id: str):
     return None
 
 
-def create_schedule(material_df, targets_df, start_date, config_df=None, mad_df=None, forced_configs=None, end_date=None, solve_time=90):
+def get_working_dates(start_date: str, end_date: str | None = None) -> list:
+    """Return weekday date strings (dd-mm-yy) from start_date to period end (28→27 month)."""
+    try:
+        start_date_obj = datetime.strptime(start_date, "%d-%m-%Y")
+    except ValueError:
+        start_date_obj = datetime.strptime(start_date, "%d-%m-%y")
+
+    d = start_date_obj
+    if d.day >= 28:
+        period_start = d.replace(day=28)
+        period_end = (
+            d.replace(year=d.year + 1, month=1, day=27)
+            if d.month == 12
+            else d.replace(month=d.month + 1, day=27)
+        )
+    else:
+        period_end = d.replace(day=27)
+        period_start = (
+            d.replace(year=d.year - 1, month=12, day=28)
+            if d.month == 1
+            else d.replace(month=d.month - 1, day=28)
+        )
+
+    if end_date is not None:
+        for fmt in ["%d-%m-%Y", "%d-%m-%y", "%Y-%m-%d"]:
+            try:
+                period_end = datetime.strptime(str(end_date).strip(), fmt)
+                break
+            except ValueError:
+                continue
+
+    effective_start = max(d, period_start)
+    working_dates = []
+    current = effective_start
+    while current <= period_end:
+        if current.weekday() < 5:
+            working_dates.append(current.strftime("%d-%m-%y"))
+        current += timedelta(days=1)
+    return working_dates
+
+
+def create_schedule(material_df, targets_df, start_date, working_dates, config_df=None, mad_df=None, forced_configs=None, end_date=None, solve_time=90):
     """
     Returns:
         schedule_df,
@@ -119,15 +149,6 @@ def create_schedule(material_df, targets_df, start_date, config_df=None, mad_df=
             except ValueError:
                 continue
 
-    effective_start = max(d, period_start)
-
-    working_dates = []
-    current = effective_start
-    while current <= period_end:
-        if current.weekday() < 5:
-            working_dates.append(current.strftime("%d-%m-%y"))
-        current += timedelta(days=1)
-
     if not working_dates:
         print("Warning: No working days in the selected range")
         return None, None, None, None, None, None, None, None
@@ -146,21 +167,24 @@ def create_schedule(material_df, targets_df, start_date, config_df=None, mad_df=
     for p in ZEN70_TYPES:
         priorities[p] = zen70_priority
 
-    # Per-product daily cap — read from targets.csv Max_Per_Day, fall back to hardcoded dict
-    _product_max = dict(product_max)
+    # Per-product daily cap — driven entirely by targets.csv Max_Per_Day.
+    # zen70 row also sets the family daily cap used in the solver constraint.
+    _product_max = {}
+    _zen70_family_max = 1
     if "Max_Per_Day" in targets_df.columns:
         for _, row in targets_df.iterrows():
             p = str(row["Product"]).lower()
             if pd.notna(row.get("Max_Per_Day")):
                 mpd = int(row["Max_Per_Day"])
                 if p == "zen70":
+                    _zen70_family_max = mpd
                     for tp in ZEN70_TYPES:
                         _product_max[tp] = mpd
                 else:
                     _product_max[p] = mpd
     for p in products:
         if p not in _product_max:
-            print(f"WARNING: {p} has no Max_Per_Day in targets.csv and no hardcoded default; using 1")
+            print(f"WARNING: {p} has no Max_Per_Day in targets.csv; defaulting to 1")
             _product_max[p] = 1
 
     materials = material_df["Material"].tolist()
@@ -333,7 +357,7 @@ def create_schedule(material_df, targets_df, start_date, config_df=None, mad_df=
         model.Add(sum(x[p, d] for p in products) <= max_systems_per_day)
         model.Add(sum(y[p, d] for p in products) <= max_products_per_day)
         # family daily cap for zen70
-        model.Add(sum(x[p, d] for p in ZEN70_TYPES if p in products) <= ZEN70_FAMILY_DAILY_MAX)
+        model.Add(sum(x[p, d] for p in ZEN70_TYPES if p in products) <= _zen70_family_max)
 
     for p in products:
         for i in range(1, len(working_dates)):
@@ -689,7 +713,7 @@ def create_schedule(material_df, targets_df, start_date, config_df=None, mad_df=
                     reason += " | MAD is before planning horizon"
                 else:
                     max_possible = len(days_up_to_mad) * (
-                        ZEN70_FAMILY_DAILY_MAX if prod == "zen70" else _product_max.get(prod, 1)
+                        _zen70_family_max if prod == "zen70" else _product_max.get(prod, 1)
                     )
                     total_demand = sum(
                         1 for (p, c), olist in orders_by_pc.items()
