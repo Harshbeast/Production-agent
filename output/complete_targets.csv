@@ -1,0 +1,8 @@
+Product,Target,Planned,Remaining
+zen10,16,16,0
+zen30,12,12,0
+zen70,33,33,0
+zen70_pv,(part of zen70),0,
+zen70_py,(part of zen70),24,
+zen70_pz,(part of zen70),9,
+zen90,33,24,9

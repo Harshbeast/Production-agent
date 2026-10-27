@@ -1,0 +1,9 @@
+Material,zen10,zen30,zen50,zen70_pv,zen70_py,zen70_pz,zen90,Available_Qty,required_Qty,Incoming_Qty,Date,Included
+ENERGY STORAGE,0,0,1,1,1,1,0,0,55,"20,24","08-10-2026,16-10-2026",True
+ASSY FD 17 interface,0,0,0,0,0,1,0,1,10,"0,9","06-10-2026,16-10-2026",True
+FD 17 cover,0,0,0,0,0,1,0,10,10,"0,0","06-10-2026,16-10-2026",True
+MOTORIZED SUSPENSION ASSEMBLY AMON 2,0,0,0,0,0,0,1,1,10,"3,6,5,5","05-10-2026,06-10-2026,16-10-2026,23-10-2026",False
+SCU(Stand Control Unit) A2S1,0,0,0,0,0,0,1,7,10,"5,10,5,5","06-10-2026,05-10-2026,16-10-2026,23-10-2026",True
+ASSEMBLY C-ARC GEOMETRY,0,0,0,0,0,0,1,0,10,"0,0,24,9","06-10-2026,09-10-2026,15-10-2026,23-10-2026",True
+Grid,0,0,0,1,0,0,0,0,10,"0,0","06-10-2026,16-10-2026",True
+Balance weight,0,0,0,1,0,0,0,0,10,"0,0","06-10-2026,16-10-2026",True
