@@ -4,12 +4,21 @@
 # ============================================
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import os
 from datetime import datetime, timedelta
 from collections import defaultdict
+from dotenv import load_dotenv
+
+# Load .env before anything else so GEMINI_API_KEY is available.
+load_dotenv()
+
+# Resolve Gemini key once — used by the chat popup throughout the file.
+gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
 
 from creater import create_schedule
+from agent import SchedulerAssistant, execute_write_csv, execute_set_constant
 
 # ============================================
 # PAGE CONFIG
@@ -17,10 +26,11 @@ from creater import create_schedule
 st.set_page_config(
     page_title="Industrial APS Scheduler",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 st.title("Industrial APS Scheduler")
+
 
 # ============================================
 # FILE PATHS
@@ -417,7 +427,6 @@ with c_from:
     plan_start = st.date_input(
         "Plan from",
         value=max(today_date, biz_start),
-        min_value=biz_start,
         key="plan_start",
     )
 with c_to:
@@ -1021,3 +1030,215 @@ with st.expander("Day completion / actuals"):
 
     if not file_empty(actual_file):
         st.dataframe(pd.read_csv(actual_file), use_container_width=True)
+
+# ============================================
+# AI CHAT POPUP
+# (sidebar styled as a floating popup via CSS;
+#  no JS bridge — Streamlit chat_input handles
+#  submission natively)
+# ============================================
+
+
+# ---- FAB + popup-CSS injection (runs on every rerun) ----
+components.html("""
+<script>
+(function () {
+  var p = window.parent.document;
+
+  if (!p.getElementById('aip-style')) {
+    var s = p.createElement('style');
+    s.id = 'aip-style';
+    s.textContent = [
+      '#aip-fab{position:fixed;bottom:1.6rem;right:1.6rem;z-index:99999;',
+      'width:52px;height:52px;border-radius:50%;background:#86efac;border:none;',
+      'cursor:pointer;font-size:22px;display:flex;align-items:center;',
+      'justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,.3);',
+      'transition:transform .15s,background .15s}',
+      '#aip-fab:hover{transform:scale(1.12);background:#4ade80}',
+      /* sidebar → floating popup */
+      'section[data-testid="stSidebar"]{',
+      'position:fixed!important;bottom:5.4rem!important;right:1.6rem!important;',
+      'left:auto!important;top:auto!important;',
+      'width:370px!important;height:560px!important;',
+      'border-radius:16px!important;overflow:hidden!important;',
+      'box-shadow:0 20px 60px rgba(0,0,0,.65)!important;',
+      'z-index:99998!important;background:#0f172a!important;',
+      'opacity:0!important;visibility:hidden!important;',
+      'transform:translateY(12px)!important;',
+      'transition:opacity .2s,visibility .2s,transform .2s!important}',
+      'section[data-testid="stSidebar"].aip-open{',
+      'opacity:1!important;visibility:visible!important;',
+      'transform:translateY(0)!important}',
+      '[data-testid="stSidebarResizeHandle"],[data-testid="stSidebarCollapsedControl"],',
+      '[data-testid="collapsedControl"]{display:none!important}',
+      'section[data-testid="stSidebar"]>div:first-child{padding-top:0!important}',
+
+      /* ── Force dark theme inside popup regardless of Streamlit theme ── */
+
+      /* All text */
+      'section[data-testid="stSidebar"] p,',
+      'section[data-testid="stSidebar"] span,',
+      'section[data-testid="stSidebar"] li,',
+      'section[data-testid="stSidebar"] label,',
+      'section[data-testid="stSidebar"] a,',
+      'section[data-testid="stSidebar"] code,',
+      'section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"]',
+      '{color:#cbd5e1!important}',
+
+      /* Chat message avatars & bubbles */
+      'section[data-testid="stSidebar"] [data-testid="stChatMessage"]',
+      '{background:transparent!important}',
+      'section[data-testid="stSidebar"] [data-testid="stChatMessage"]>div>div',
+      '{background:#1e293b!important;color:#cbd5e1!important;border-radius:10px!important}',
+
+      /* Chat input box */
+      'section[data-testid="stSidebar"] [data-testid="stChatInput"]',
+      '{background:#1e293b!important;border-top:1px solid #334155!important}',
+      'section[data-testid="stSidebar"] [data-testid="stChatInputTextArea"] textarea,',
+      'section[data-testid="stSidebar"] [data-testid="stChatInput"] textarea',
+      '{background:#1e293b!important;color:#e2e8f0!important;',
+      'border:1px solid #334155!important;border-radius:10px!important}',
+      'section[data-testid="stSidebar"] [data-testid="stChatInput"] textarea::placeholder',
+      '{color:#64748b!important}',
+      'section[data-testid="stSidebar"] [data-testid="stChatInputSubmitButton"] button',
+      '{background:#1d4ed8!important;color:#fff!important}',
+
+      /* Info / warning / error boxes */
+      'section[data-testid="stSidebar"] [data-testid="stNotification"],',
+      'section[data-testid="stSidebar"] .stAlert,',
+      'section[data-testid="stSidebar"] [data-baseweb="notification"]',
+      '{background:#1e293b!important;color:#cbd5e1!important;border-color:#334155!important}',
+
+      /* Buttons (Confirm / Cancel) */
+      'section[data-testid="stSidebar"] button[kind="secondary"],',
+      'section[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]',
+      '{background:#1e293b!important;color:#e2e8f0!important;',
+      'border:1px solid #334155!important}',
+      'section[data-testid="stSidebar"] button[kind="secondary"]:hover',
+      '{background:#334155!important}',
+
+      /* Scrollbar */
+      'section[data-testid="stSidebar"] *::-webkit-scrollbar{width:4px}',
+      'section[data-testid="stSidebar"] *::-webkit-scrollbar-thumb',
+      '{background:#334155;border-radius:2px}',
+      'section[data-testid="stSidebar"] *::-webkit-scrollbar-track{background:transparent}',
+    ].join('');
+    p.head.appendChild(s);
+  }
+
+  if (!p.getElementById('aip-fab')) {
+    var fab = p.createElement('button');
+    fab.id = 'aip-fab';
+    fab.title = 'AI Planning Assistant';
+    fab.innerHTML = '&#x1F916;';
+    p.body.appendChild(fab);
+  }
+
+  /* Re-attach every rerun so closure always has current scope */
+  p.getElementById('aip-fab').onclick = function () {
+    var sb = p.querySelector('section[data-testid="stSidebar"]');
+    if (!sb) return;
+    var open = sb.classList.toggle('aip-open');
+    sessionStorage.setItem('aip_open', open ? '1' : '0');
+  };
+
+  /* Restore open state */
+  if (sessionStorage.getItem('aip_open') === '1') {
+    var sb = p.querySelector('section[data-testid="stSidebar"]');
+    if (sb) sb.classList.add('aip-open');
+  }
+})();
+</script>
+""", height=0, scrolling=False)
+
+# ---- Sidebar = native Streamlit chat (no JS bridge needed) ----
+with st.sidebar:
+    # Gradient header
+    st.markdown(
+        """<div style="background:linear-gradient(135deg,#1e3a5f 0%,#1d4ed8 60%,#0891b2 100%);
+                    padding:.9rem 1.1rem .8rem;margin:-1rem -1rem .5rem -1rem">
+          <p style="font-size:10px;letter-spacing:2px;color:rgba(255,255,255,.7);
+                    text-transform:uppercase;margin:0 0 3px">AI Planning Assistant</p>
+          <h3 style="font-size:17px;font-weight:700;color:#fff;margin:0">
+            Production Scheduler</h3>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+    # State init
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+    if "pending_operation" not in st.session_state:
+        st.session_state.pending_operation = None
+
+    # Assistant init
+    if gemini_key:
+        if (
+            "chat_assistant" not in st.session_state
+            or st.session_state.get("_gemini_key_used") != gemini_key
+        ):
+            try:
+                st.session_state.chat_assistant   = SchedulerAssistant(gemini_key)
+                st.session_state._gemini_key_used = gemini_key
+            except Exception as _exc:
+                st.error(f"AI assistant error: {_exc}")
+    else:
+        st.info("Set GEMINI_API_KEY in .env to enable chat.")
+
+    # Pending confirmation
+    _pending = st.session_state.get("pending_operation")
+    if _pending:
+        st.warning(
+            f"**Proposed change**\n\n{_pending['description']}\n\n_Nothing written yet._"
+        )
+        _c1, _c2 = st.columns(2)
+        if _c1.button("✓ Confirm", use_container_width=True, key="aip_confirm"):
+            if _pending["type"] == "write_csv":
+                _ok, _m = execute_write_csv(_pending["path"], _pending["updates"])
+            else:
+                _ok, _m = execute_set_constant(_pending["name"], _pending["value"])
+            _r = (
+                f"✅ Done — {_pending['description']}.\n\nClick **Create Initial Plan** to regenerate."
+                if _ok else f"❌ Write failed: {_m}"
+            )
+            st.session_state.chat_messages.append({"role": "assistant", "content": _r})
+            st.session_state.pending_operation = None
+            st.rerun()
+        if _c2.button("✕ Cancel", use_container_width=True, key="aip_cancel"):
+            st.session_state.chat_messages.append(
+                {"role": "assistant", "content": "Change cancelled — nothing written."}
+            )
+            st.session_state.pending_operation = None
+            st.rerun()
+
+    # Chat history
+    for _m in st.session_state.get("chat_messages", [])[-40:]:
+        with st.chat_message(_m["role"]):
+            st.markdown(_m["content"])
+
+    # Chat input (native — no JS bridge)
+    _user_input = st.chat_input(
+        "Ask about the schedule, materials, targets…",
+        disabled=bool(st.session_state.get("pending_operation")),
+        key="aip_chat_input",
+    )
+    if _user_input:
+        st.session_state.chat_messages.append({"role": "user", "content": _user_input})
+        if "chat_assistant" in st.session_state:
+            with st.spinner("Thinking…"):
+                try:
+                    _reply, _new_pending = st.session_state.chat_assistant.send_message(
+                        _user_input
+                    )
+                except Exception as _exc:
+                    _reply, _new_pending = f"Error: {_exc}", None
+            if _new_pending:
+                st.session_state.pending_operation = _new_pending
+            st.session_state.chat_messages.append({"role": "assistant", "content": _reply})
+        else:
+            st.session_state.chat_messages.append(
+                {"role": "assistant",
+                 "content": "⚠️ AI not ready. Check GEMINI_API_KEY in .env."}
+            )
+        st.rerun()
+
