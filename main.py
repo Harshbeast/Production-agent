@@ -9,7 +9,7 @@ import os
 from datetime import datetime, timedelta
 from collections import defaultdict
 
-from creater import create_schedule, get_working_dates
+from creater import create_schedule
 
 # ============================================
 # PAGE CONFIG
@@ -432,20 +432,118 @@ if plan_start > plan_end:
     st.error("'Plan from' must not be after 'Plan to'.")
     st.stop()
 
-working_days = sum(
-    1 for i in range((plan_end - plan_start).days + 1)
-    if (plan_start + timedelta(days=i)).weekday() < 5
-)
-
 start_date_str = plan_start.strftime("%d-%m-%y")
 end_date_str = plan_end.strftime("%d-%m-%y")
 planning_start_dt = datetime.combine(plan_start, datetime.min.time())
 period_start, period_end = get_business_period(planning_start_dt)
 
+# ---- Calendar working-day selector ----
+st.markdown("#### Working days")
+st.markdown(
+    """<style>
+    /* Selected calendar day — light green.
+       Direct selector; works regardless of Streamlit version or DOM nesting. */
+    button[data-testid="baseButton-primary"],
+    button[kind="primary"] {
+        background-color: #86efac !important;
+        border-color:     #86efac !important;
+        color:            #14532d !important;
+    }
+    button[data-testid="baseButton-primary"]:hover,
+    button[kind="primary"]:hover {
+        background-color: #4ade80 !important;
+        border-color:     #4ade80 !important;
+        color:            #14532d !important;
+    }
+    </style>""",
+    unsafe_allow_html=True,
+)
+
+_DAY_ABBR  = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_cal_key   = f"cal_{plan_start}_{plan_end}"
+_cal_start = plan_start - timedelta(days=plan_start.weekday())
+_cal_end   = plan_end   + timedelta(days=6 - plan_end.weekday())
+
+# Initialise session state when the date range is new or first load.
+# Key encodes the range so changing plan_start/plan_end resets to weekday defaults.
+if _cal_key not in st.session_state:
+    _init = set()
+    _d = plan_start
+    while _d <= plan_end:
+        if _d.weekday() < 5:
+            _init.add(_d)
+        _d += timedelta(days=1)
+    st.session_state[_cal_key] = _init
+
+_selected = st.session_state[_cal_key]
+
+# Day-of-week header row
+_hcols = st.columns(7)
+for _i, _name in enumerate(_DAY_ABBR):
+    _color = "#999" if _i >= 5 else "#444"
+    _hcols[_i].markdown(
+        f"<div style='text-align:center;font-weight:700;color:{_color};"
+        f"font-size:13px;padding:4px 0'>{_name}</div>",
+        unsafe_allow_html=True,
+    )
+
+# Week rows — every cell is a full-width button so all 7 columns stay aligned.
+# Primary (coloured) = selected working day  |  Secondary = not selected  |  Disabled = outside range
+_cur = _cal_start
+_last_shown_month = None
+while _cur <= _cal_end:
+    _week = [_cur + timedelta(days=_i) for _i in range(7)]
+
+    # Month label when month changes within the plan range
+    _first_in = next((d for d in _week if plan_start <= d <= plan_end), None)
+    if _first_in and _first_in.month != _last_shown_month:
+        _last_shown_month = _first_in.month
+        st.markdown(
+            f"<div style='font-size:11px;color:#aaa;margin:6px 0 2px 0'>"
+            f"{_first_in.strftime('%B %Y')}</div>",
+            unsafe_allow_html=True,
+        )
+
+    _wcols = st.columns(7)
+    for _i, _day in enumerate(_week):
+        _in_range = plan_start <= _day <= plan_end
+        _btn_key  = f"{_cal_key}_{_day.isoformat()}"
+        _is_sel   = _day in _selected
+        if _in_range:
+            if _wcols[_i].button(
+                str(_day.day),
+                key=_btn_key,
+                use_container_width=True,
+                type="primary" if _is_sel else "secondary",
+            ):
+                if _is_sel:
+                    _selected.discard(_day)
+                else:
+                    _selected.add(_day)
+                st.rerun()
+        else:
+            _wcols[_i].button(
+                str(_day.day),
+                key=_btn_key,
+                use_container_width=True,
+                disabled=True,
+            )
+
+    _cur += timedelta(days=7)
+
+working_dates = sorted(
+    [d.strftime("%d-%m-%y") for d in _selected if plan_start <= d <= plan_end],
+    key=lambda s: datetime.strptime(s, "%d-%m-%y"),
+)
+
+if not working_dates:
+    st.error("No working days selected — pick at least one day.")
+    st.stop()
+
 st.caption(
     f"Ref. period **{biz_start.strftime('%d-%m-%Y')} → {biz_end.strftime('%d-%m-%Y')}** · "
     f"Planning window **{plan_start.strftime('%d-%m-%Y')} → {plan_end.strftime('%d-%m-%Y')}** · "
-    f"**{working_days}** working days · Today **{today_str}**"
+    f"**{len(working_dates)}** working days · Today **{today_str}**"
 )
 
 if os.path.exists(tracking_file):
@@ -541,14 +639,13 @@ with st.expander("Advanced solver settings", expanded=False):
 st.markdown("### Planning")
 c1, c2 = st.columns(2)
 with c1:
-    if st.button("Create Initial Plan", type="primary", use_container_width=True):
+    if st.button("Create Initial Plan", type="secondary", use_container_width=True):
         with st.spinner("Preparing inputs and solving..."):
             targets_rem, material_rem, config_rem, mad_open, summary = prepare_planning_inputs(
                 targets_df, material_df, config_df, mad_df, start_date_str
             )
             st.session_state["prep_summary"] = summary
 
-            working_dates = get_working_dates(start_date_str, end_date_str)
             result = create_schedule(
                 material_df=material_rem,
                 targets_df=targets_rem,
@@ -803,7 +900,7 @@ with st.expander("Move configuration"):
             with m4:
                 qty = st.number_input("Qty", min_value=1, max_value=5, value=1, key="move_qty")
 
-            if st.button("Apply move", type="primary"):
+            if st.button("Apply move", type="secondary"):
                 current = config_df_view.set_index("Config")
                 current_from = int(current.loc[selected_config, from_date])
                 current_to = int(current.loc[selected_config, to_date])
@@ -818,7 +915,6 @@ with st.expander("Move configuration"):
                     targets_rem, material_rem, config_rem, mad_open, _ = prepare_planning_inputs(
                         targets_df, material_df, config_df, mad_df, start_date_str
                     )
-                    working_dates = get_working_dates(start_date_str, end_date_str)
                     result = create_schedule(
                         material_df=material_rem,
                         targets_df=targets_rem,
@@ -879,17 +975,20 @@ with st.expander("Day completion / actuals"):
                 st.warning("No plan row for today.")
 
     with btn_col2:
-        if st.button("Replan from today", use_container_width=True, type="primary"):
+        if st.button("Replan from today", use_container_width=True, type="secondary"):
             with st.spinner("Replanning from today..."):
                 targets_rem, material_rem, config_rem, mad_open, summary = prepare_planning_inputs(
                     targets_df, material_df, config_df, mad_df, today_str
                 )
-                working_dates = get_working_dates(today_str, end_date_str)
+                replan_dates = [
+                    d for d in working_dates
+                    if datetime.strptime(d, "%d-%m-%y").date() >= today_date
+                ]
                 result = create_schedule(
                     material_df=material_rem,
                     targets_df=targets_rem,
                     start_date=today_str,
-                    working_dates=working_dates,
+                    working_dates=replan_dates,
                     end_date=end_date_str,
                     config_df=config_rem if not config_rem.empty else None,
                     mad_df=mad_open if not mad_open.empty else None,
